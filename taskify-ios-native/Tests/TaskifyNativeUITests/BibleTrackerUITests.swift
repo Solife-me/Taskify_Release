@@ -8,6 +8,51 @@ final class BibleTrackerUITests: XCTestCase {
         continueAfterFailure = false
     }
 
+    func testMarkAllChaptersReadForOneBook() throws {
+        let app = XCUIApplication()
+        app.launchEnvironment["TASKIFY_UI_TEST_ONBOARDING"] = "skip"
+        app.launchEnvironment["TASKIFY_UI_TEST_FRESH_STORE"] = "1"
+        app.launch()
+
+        openSettings(app, group: "Bible")
+        let toggle = app.switches["Bible Reading Tracker"]
+        XCTAssertTrue(toggle.waitForExistence(timeout: 10))
+        if toggle.value as? String == "0" { toggle.tap() }
+
+        openTab(app, "Boards")
+        let boardPicker = app.buttons.matching(NSPredicate(format: "label CONTAINS[c] %@", "Week")).firstMatch
+        XCTAssertTrue(boardPicker.waitForExistence(timeout: 10))
+        boardPicker.tap()
+        let bible = app.buttons["Bible"]
+        XCTAssertTrue(bible.waitForExistence(timeout: 5))
+        bible.tap()
+
+        let genesis = app.buttons["Genesis"]
+        XCTAssertTrue(genesis.waitForExistence(timeout: 5))
+        let markAll = app.buttons["Mark all as read"]
+        XCTAssertFalse(markAll.exists)
+        genesis.tap()
+
+        let chapter1 = app.buttons["Chapter 1"]
+        let chapter2 = app.buttons["Chapter 2"]
+        XCTAssertTrue(chapter1.waitForExistence(timeout: 5))
+        if chapter1.value as? String != "Read" { chapter1.tap() }
+        XCTAssertTrue(markAll.waitForExistence(timeout: 5))
+        markAll.tap()
+
+        XCTAssertTrue(app.buttons["Complete Book"].waitForExistence(timeout: 5))
+        XCTAssertFalse(markAll.exists)
+        XCTAssertEqual(genesis.value as? String, "50 of 50 chapters read")
+        XCTAssertEqual(chapter1.value as? String, "Read")
+        XCTAssertEqual(chapter2.value as? String, "Read")
+
+        chapter2.tap()
+        XCTAssertTrue(markAll.waitForExistence(timeout: 5))
+        XCTAssertEqual(genesis.value as? String, "49 of 50 chapters read")
+        genesis.tap()
+        XCTAssertEqual(app.buttons["Exodus"].value as? String, "0 of 40 chapters read")
+    }
+
     func testBibleTrackerFlow() throws {
         let app = XCUIApplication()
         app.launchEnvironment["TASKIFY_UI_TEST_ONBOARDING"] = "skip"

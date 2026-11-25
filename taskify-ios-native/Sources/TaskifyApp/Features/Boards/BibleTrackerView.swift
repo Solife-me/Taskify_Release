@@ -395,7 +395,7 @@ private struct BibleBookRow: View {
     let onLongPressChapter: (Int) -> Void
 
     private var chaptersRead: Set<Int> { store.chaptersRead(bookID: book.id) }
-    private var readyForCompletion: Bool { chaptersRead.count == book.chapterCount }
+    private var readyForCompletion: Bool { chaptersRead.isSuperset(of: 1...book.chapterCount) }
 
     private let columns = [GridItem(.adaptive(minimum: 42), spacing: 6)]
 
@@ -424,19 +424,27 @@ private struct BibleBookRow: View {
 
             if isExpanded {
                 VStack(alignment: .leading, spacing: 10) {
-                    if readyForCompletion {
-                        HStack {
-                            Spacer()
+                    HStack {
+                        Spacer()
+                        if readyForCompletion {
                             Button {
                                 withAnimation(.snappy) { _ = store.completeBook(bookID: book.id) }
                             } label: {
                                 Label("Complete Book", systemImage: "checkmark.seal.fill")
-                                    .font(.caption.weight(.semibold))
                             }
                             .buttonStyle(.borderedProminent)
-                            .tint(TaskifyTheme.accent)
+                        } else {
+                            Button {
+                                withAnimation(.snappy) { store.markAllChaptersRead(bookID: book.id) }
+                            } label: {
+                                Label("Mark all as read", systemImage: "checkmark")
+                            }
+                            .buttonStyle(.bordered)
+                            .accessibilityHint("Marks every chapter of \(book.name) as read")
                         }
                     }
+                    .font(.caption.weight(.semibold))
+                    .tint(TaskifyTheme.accent)
 
                     LazyVGrid(columns: columns, spacing: 6) {
                         ForEach(1...book.chapterCount, id: \.self) { chapter in

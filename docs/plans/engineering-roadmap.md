@@ -147,6 +147,10 @@ long-distance moves around archived, hidden, and Bible boards.
 The iOS archived-board Settings test checks that archived rows start hidden, can be
 shown and hidden again, and return to the active list after Restore.
 
+The iOS Bible tracker test marks a partially read book fully read, checks the
+chapter count and Complete Book action, and verifies that individual chapters can
+still be edited and a neighboring book keeps its progress.
+
 ## Board Sharing and Local Reset Coverage
 
 The PWA reset tests use disposable IndexedDB databases and verify that a
