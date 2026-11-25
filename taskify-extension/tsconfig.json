@@ -1,0 +1,22 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "jsx": "react-jsx",
+    "strict": true,
+    "noEmit": true,
+    "skipLibCheck": true,
+    "allowImportingTsExtensions": true,
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "verbatimModuleSyntax": true,
+    "types": ["vite/client", "chrome", "node"],
+    "paths": {
+      "taskify-core": ["../taskify-core/src/index.ts"],
+      "taskify-runtime-nostr": ["../taskify-runtime-nostr/src/index.ts"]
+    }
+  },
+  "include": ["src", "vite.config.ts"]
+}
